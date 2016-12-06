@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/gogo/protobuf/proto"
 	"github.com/lomik/graphite-clickhouse/carbonzipperpb"
@@ -31,6 +33,32 @@ func (s Points) Len() int      { return len(s) }
 func (s Points) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 
 type ByKey struct{ Points }
+
+func unsafeString(b []byte) string {
+	return *(*string)(unsafe.Pointer(&b))
+}
+
+var errUvarintRead = errors.New("ReadUvarint: Malformed array")
+var errUvarintOverflow = errors.New("ReadUvarint: varint overflows a 64-bit integer")
+
+func ReadUvarint(array []byte) (uint64, int, error) {
+	var x uint64
+	var s uint
+	l := len(array) - 1
+	for i := 0; ; i++ {
+		if i > l {
+			return x, i + 1, errUvarintRead
+		}
+		if array[i] < 0x80 {
+			if i > 9 || i == 9 && array[i] > 1 {
+				return x, i + 1, errUvarintOverflow
+			}
+			return x | uint64(array[i])<<s, i + 1, nil
+		}
+		x |= uint64(array[i]&0x7f) << s
+		s += 7
+	}
+}
 
 func (s ByKey) Less(i, j int) bool {
 	c := strings.Compare(s.Points[i].Metric, s.Points[j].Metric)
@@ -52,6 +80,12 @@ type RenderHandler struct {
 }
 
 func (h *RenderHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	requestStart := time.Now()
+
+	defer func() {
+		Logger(r.Context()).Debug("total", zap.Duration("time_ns", time.Since(requestStart)))
+	}()
+
 	logger := Logger(r.Context())
 	target := r.URL.Query().Get("target")
 
@@ -179,43 +213,37 @@ func (h *RenderHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parseStart := time.Now()
-
-	buf := bytes.NewBuffer(data)
-
-	b := make([]byte, 1024*1024)
 	points := make([]Point, 0)
+	var namelen uint64
+	offset := 0
+	readBytes := 0
+	l := len(data) - 1
 
 	for {
-		namelen, err := binary.ReadUvarint(buf)
-		if err == io.EOF {
+		if offset >= l {
 			break
 		}
+		namelen, readBytes, err = ReadUvarint(data[offset:])
 		if err != nil {
 			break
 		}
-		_, err = buf.Read(b[:namelen])
-		if err != nil {
+		offset += readBytes
+		if len(data[offset:]) < int(namelen)+4+8+4 {
+			logger.Error("Malformed response from clickhouse")
 			break
 		}
-		name := string(b[:namelen])
 
-		_, err = buf.Read(b[:4])
-		if err != nil {
-			break
-		}
-		time := binary.LittleEndian.Uint32(b[:4])
+		name := unsafeString(data[offset : offset+int(namelen)])
+		offset += int(namelen)
 
-		_, err = buf.Read(b[:8])
-		if err != nil {
-			break
-		}
-		value := math.Float64frombits(binary.LittleEndian.Uint64(b[:8]))
+		time := binary.LittleEndian.Uint32(data[offset : offset+4])
+		offset += 4
 
-		_, err = buf.Read(b[:4])
-		if err != nil {
-			break
-		}
-		timestamp := binary.LittleEndian.Uint32(b[:4])
+		value := math.Float64frombits(binary.LittleEndian.Uint64(data[offset : offset+8]))
+		offset += 8
+
+		timestamp := binary.LittleEndian.Uint32(data[offset : offset+4])
+		offset += 4
 
 		points = append(points, Point{
 			Metric:    name,
@@ -225,7 +253,7 @@ func (h *RenderHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	if err != nil && err == io.EOF {
+	if err != nil && err != io.EOF {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -239,7 +267,7 @@ func (h *RenderHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	points = PointsUniq(points)
 
-	// pp.Println(points)
+	// fmt.Printf("%+v\n", points)
 	h.Reply(w, r, points, int32(fromTimestamp), int32(untilTimestamp), prefix)
 }
 
@@ -353,6 +381,14 @@ func (h *RenderHandler) ReplyPickle(w http.ResponseWriter, r *http.Request, poin
 }
 
 func (h *RenderHandler) ReplyProtobuf(w http.ResponseWriter, r *http.Request, points []Point, from, until int32, prefix string) {
+	var rollupTime time.Duration
+	var protobufTime time.Duration
+
+	defer func() {
+		Logger(r.Context()).Debug("rollup", zap.Duration("time_ns", rollupTime))
+		Logger(r.Context()).Debug("protobuf", zap.Duration("time_ns", protobufTime))
+	}()
+
 	if len(points) == 0 {
 		return
 	}
@@ -360,8 +396,11 @@ func (h *RenderHandler) ReplyProtobuf(w http.ResponseWriter, r *http.Request, po
 	var multiResponse carbonzipperpb.MultiFetchResponse
 
 	writeMetric := func(points []Point) {
+		rollupStart := time.Now()
 		points, step := h.config.Rollup.RollupMetric(points)
+		rollupTime += time.Since(rollupStart)
 
+		protobufStart := time.Now()
 		var name string
 
 		if prefix != "" {
@@ -403,6 +442,7 @@ func (h *RenderHandler) ReplyProtobuf(w http.ResponseWriter, r *http.Request, po
 		}
 
 		multiResponse.Metrics = append(multiResponse.Metrics, &response)
+		protobufTime += time.Since(protobufStart)
 	}
 
 	// group by Metric
@@ -420,7 +460,10 @@ func (h *RenderHandler) ReplyProtobuf(w http.ResponseWriter, r *http.Request, po
 	}
 	writeMetric(points[n:i])
 
+	protobufStart := time.Now()
+
 	body, _ := proto.Marshal(&multiResponse)
+	protobufTime += time.Since(protobufStart)
 	w.Write(body)
 }
 
