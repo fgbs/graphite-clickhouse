@@ -20,19 +20,19 @@ import (
 	"github.com/uber-go/zap"
 )
 
-// type Point struct {
-// 	Metric    string
-// 	Time      int32
-// 	Value     float64
-// 	Timestamp int32 // keep max if metric and time equal on two points
-// }
+type Point struct {
+	Metric    string
+	Time      int32
+	Value     float64
+	Timestamp int32 // keep max if metric and time equal on two points
+}
 
-// type Points []Point
+type Points []Point
 
-// func (s Points) Len() int      { return len(s) }
-// func (s Points) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
+func (s Points) Len() int      { return len(s) }
+func (s Points) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 
-// type ByKey struct{ Points }
+type ByKey struct{ Points }
 
 func unsafeString(b []byte) string {
 	return *(*string)(unsafe.Pointer(&b))

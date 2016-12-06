@@ -1,31 +1,25 @@
 package backend
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"math"
 	"sync"
 )
 
-type Point struct {
-	Metric    string
+const PointBufferSize = 65536
+
+type Record struct {
+	Metric    []byte
 	Time      int32
 	Value     float64
 	Timestamp int32 // keep max if metric and time equal on two points
 }
 
-type Points []Point
-
-func (s Points) Len() int      { return len(s) }
-func (s Points) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
-
-type ByKey struct{ Points }
-
-const PointBufferSize = 65536
-
 type PointBuffer struct {
 	Used   int
-	Points [PointBufferSize]Point
+	Points [PointBufferSize]Record
 }
 
 var PointBufferPool = sync.Pool{
@@ -69,6 +63,8 @@ func ParseData(body []byte) (*Data, error) {
 
 	points := d.Points[len(d.Points)-1]
 
+	prevName := []byte{}
+
 ParseLoop:
 	for {
 		if offset == bodyLen {
@@ -86,8 +82,14 @@ ParseLoop:
 			break ParseLoop
 		}
 
-		name := unsafeString(d.Body[offset : offset+int(namelen)])
+		name := d.Body[offset : offset+int(namelen)]
 		offset += int(namelen)
+
+		if bytes.Compare(name, prevName) == 0 {
+			name = prevName
+		} else {
+			prevName = name
+		}
 
 		time := binary.LittleEndian.Uint32(d.Body[offset : offset+4])
 		offset += 4
@@ -97,8 +99,6 @@ ParseLoop:
 
 		timestamp := binary.LittleEndian.Uint32(d.Body[offset : offset+4])
 		offset += 4
-
-		// fmt.Println(string(name), time, value, timestamp)
 
 		if points.Used == PointBufferSize {
 			d.Points = append(d.Points, GetPointBuffer())
@@ -122,10 +122,41 @@ func (d *Data) Release() {
 	}
 }
 
-func (d *Data) Size() int {
+func (d *Data) Len() int {
 	total := 0
 	for _, p := range d.Points {
 		total += p.Used
 	}
 	return total
+}
+
+func (d *Data) p(i int) *Record {
+	return &d.Points[i/PointBufferSize].Points[i%PointBufferSize]
+}
+
+func (d *Data) Less(i, j int) bool {
+	p1, p2 := d.p(i), d.p(j)
+
+	var c int
+	// if int(&p1.Metric) == int(&p2.Metric) {
+	// c = 0
+	// } else {
+	c = bytes.Compare([]byte(p1.Metric), []byte(p2.Metric))
+	// }
+
+	switch c {
+	case -1:
+		return true
+	case 1:
+		return false
+	case 0:
+		return p1.Time < p2.Time
+	}
+
+	return false
+}
+
+func (d *Data) Swap(i, j int) {
+	p1, p2 := d.p(i), d.p(j)
+	*p1, *p2 = *p2, *p1
 }
