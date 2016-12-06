@@ -1,10 +1,9 @@
-package backend
+package render
 
 import (
 	"encoding/binary"
 	"io/ioutil"
 	"math"
-	"sort"
 
 	"testing"
 )
@@ -15,7 +14,7 @@ func TestParseData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d, err := ParseData(body)
+	d, err := Parse(body)
 	if err != nil {
 		t.FailNow()
 	}
@@ -54,7 +53,7 @@ func BenchmarkParseAppend(b *testing.B) {
 				break
 			}
 
-			name := unsafeString(data[offset : offset+int(namelen)])
+			name := data[offset : offset+int(namelen)]
 			offset += int(namelen)
 
 			time := binary.LittleEndian.Uint32(data[offset : offset+4])
@@ -96,7 +95,7 @@ func BenchmarkParseData(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i += 1 {
-		d, _ := ParseData(body)
+		d, _ := Parse(body)
 		if d.Len() != 163911 {
 			b.FailNow()
 		}
@@ -104,17 +103,17 @@ func BenchmarkParseData(b *testing.B) {
 	}
 }
 
-func BenchmarkSortData(b *testing.B) {
-	body, err := ioutil.ReadFile("testdata/t1.rowbinary")
-	if err != nil {
-		b.Fatal(err)
-	}
+// func BenchmarkSortData(b *testing.B) {
+// 	body, err := ioutil.ReadFile("testdata/t1.rowbinary")
+// 	if err != nil {
+// 		b.Fatal(err)
+// 	}
 
-	d, _ := ParseData(body)
+// 	d, _ := Parse(body)
 
-	b.ResetTimer()
+// 	b.ResetTimer()
 
-	for i := 0; i < b.N; i += 1 {
-		sort.Sort(d)
-	}
-}
+// 	for i := 0; i < b.N; i += 1 {
+// 		sort.Sort(d)
+// 	}
+// }
