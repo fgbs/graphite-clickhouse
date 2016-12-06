@@ -35,3 +35,22 @@ func (d *Data) NameToID(name string) int {
 	}
 	return id
 }
+
+func (d *Data) p(i int) *Point {
+	return &d.Blocks[i/BlockSize].Points[i%BlockSize]
+}
+
+func (d *Data) Less(i, j int) bool {
+	p1, p2 := d.p(i), d.p(j)
+
+	if p1.id == p2.id {
+		return p1.Time < p2.Time
+	}
+
+	return p1.id < p2.id
+}
+
+func (d *Data) Swap(i, j int) {
+	p1, p2 := d.p(i), d.p(j)
+	*p1, *p2 = *p2, *p1
+}

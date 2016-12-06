@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"io/ioutil"
 	"math"
+	"sort"
 
 	"testing"
 )
@@ -103,17 +104,17 @@ func BenchmarkParseData(b *testing.B) {
 	}
 }
 
-// func BenchmarkSortData(b *testing.B) {
-// 	body, err := ioutil.ReadFile("testdata/t1.rowbinary")
-// 	if err != nil {
-// 		b.Fatal(err)
-// 	}
+func BenchmarkSortData(b *testing.B) {
+	body, err := ioutil.ReadFile("testdata/t1.rowbinary")
+	if err != nil {
+		b.Fatal(err)
+	}
 
-// 	d, _ := Parse(body)
+	d, _ := Parse(body)
 
-// 	b.ResetTimer()
+	b.ResetTimer()
 
-// 	for i := 0; i < b.N; i += 1 {
-// 		sort.Sort(d)
-// 	}
-// }
+	for i := 0; i < b.N; i += 1 {
+		sort.Sort(d)
+	}
+}
