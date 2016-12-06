@@ -87,6 +87,127 @@ func BenchmarkParseAppend(b *testing.B) {
 	}
 }
 
+func BenchmarkParseCountAllocate(b *testing.B) {
+	// old version
+
+	body, err := ioutil.ReadFile("testdata/t1.rowbinary")
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	count := func(data []byte) int {
+		var namelen uint64
+		dataLen := len(data)
+		var count, offset, readBytes int
+
+		for {
+			if offset >= dataLen {
+				break
+			}
+			namelen, readBytes, err = ReadUvarint(data[offset:])
+			if err != nil {
+				break
+			}
+			offset += readBytes + int(namelen) + 16
+			count++
+		}
+
+		return count
+	}
+
+	parse := func(data []byte) []Point {
+		points := make([]Point, count(data))
+
+		var namelen uint64
+		offset := 0
+		readBytes := 0
+		l := len(data) - 1
+		index := 0
+
+		for {
+			if offset >= l {
+				break
+			}
+			namelen, readBytes, err = ReadUvarint(data[offset:])
+			if err != nil {
+				break
+			}
+			offset += readBytes
+			if len(data[offset:]) < int(namelen)+4+8+4 {
+				// logger.Error("Malformed response from clickhouse")
+				break
+			}
+
+			name := data[offset : offset+int(namelen)]
+			offset += int(namelen)
+
+			time := binary.LittleEndian.Uint32(data[offset : offset+4])
+			offset += 4
+
+			value := math.Float64frombits(binary.LittleEndian.Uint64(data[offset : offset+8]))
+			offset += 8
+
+			timestamp := binary.LittleEndian.Uint32(data[offset : offset+4])
+			offset += 4
+
+			points[index].Metric = name
+			points[index].Time = int32(time)
+			points[index].Value = value
+			points[index].Timestamp = int32(timestamp)
+			index++
+		}
+
+		return points
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i += 1 {
+		points := parse(body)
+		if len(points) != 163911 {
+			b.FailNow()
+		}
+	}
+}
+
+func BenchmarkParseCount(b *testing.B) {
+	// old version
+
+	body, err := ioutil.ReadFile("testdata/t1.rowbinary")
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	count := func(data []byte) int {
+		var namelen uint64
+		dataLen := len(data)
+		var count, offset, readBytes int
+
+		for {
+			if offset >= dataLen {
+				break
+			}
+			namelen, readBytes, err = ReadUvarint(data[offset:])
+			if err != nil {
+				break
+			}
+			offset += readBytes + int(namelen) + 16
+			count++
+		}
+
+		return count
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i += 1 {
+		c := count(body)
+		if c != 163911 {
+			b.FailNow()
+		}
+	}
+}
+
 func BenchmarkParseData(b *testing.B) {
 	body, err := ioutil.ReadFile("testdata/t1.rowbinary")
 	if err != nil {
