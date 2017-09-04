@@ -38,22 +38,62 @@ func ReadUvarint(array []byte) (uint64, int, error) {
 	}
 }
 
-type Data struct {
-	body     []byte // raw RowBinary from clickhouse
-	Points   []point.Point
-	nameToID map[string]int
-	maxID    int
-	Finder   finder.Finder
+type DataValue struct {
+	id   int
+	name string
 }
 
-func (d *Data) NameToID(name string) int {
-	id := d.nameToID[name]
-	if id == 0 {
+type Data struct {
+	body        []byte // raw RowBinary from clickhouse
+	Points      []point.Point
+	nameToID    map[string]*DataValue
+	revNameToID map[string]*DataValue
+	maxID       int
+
+	prevName         []byte
+	prevValue        *DataValue
+	prevNameReverse  []byte
+	prevValueReverse *DataValue
+
+	Finder finder.Finder
+}
+
+func (d *Data) value(name string) *DataValue {
+	v := d.nameToID[name]
+	if v == nil {
 		d.maxID++
-		id = d.maxID
-		d.nameToID[name] = id
+		v = &DataValue{
+			id:   d.maxID,
+			name: name,
+		}
+		d.nameToID[name] = v
 	}
-	return id
+	return v
+}
+
+func (d *Data) NameToID(name []byte) (int, string) {
+	if bytes.Compare(name, d.prevName) != 0 {
+		d.prevName = name
+		d.prevValue = d.value(unsafeString(name))
+	}
+
+	return d.prevValue.id, d.prevValue.name
+}
+
+func (d *Data) RevNameToID(revName []byte) (int, string) {
+
+	if bytes.Compare(revName, d.prevNameReverse) != 0 {
+		v := d.revNameToID[unsafeString(revName)]
+		if v == nil {
+			v = d.value(finder.ReverseString(unsafeString(revName)))
+			d.revNameToID[unsafeString(revName)] = v
+		}
+
+		d.prevNameReverse = revName
+		d.prevValueReverse = v
+	}
+
+	return d.prevValueReverse.id, d.prevValueReverse.name
 }
 
 func DataCount(body []byte) (int, error) {
@@ -87,8 +127,9 @@ func DataParse(body []byte, extraPoints []point.Point) (*Data, error) {
 	}
 
 	d := &Data{
-		Points:   make([]point.Point, count+len(extraPoints)),
-		nameToID: make(map[string]int),
+		Points:      make([]point.Point, count+len(extraPoints)),
+		nameToID:    make(map[string]*DataValue),
+		revNameToID: make(map[string]*DataValue),
 	}
 
 	var namelen uint64
@@ -100,12 +141,9 @@ func DataParse(body []byte, extraPoints []point.Point) (*Data, error) {
 	// add extraPoints. With NameToID
 	for i := 0; i < len(extraPoints); i++ {
 		d.Points[index] = extraPoints[i]
-		d.Points[index].MetricID = d.NameToID(d.Points[index].Metric)
+		d.Points[index].MetricID, d.Points[index].Metric = d.NameToID([]byte(d.Points[index].Metric))
 		index++
 	}
-
-	name := []byte{}
-	id := 0
 
 	for {
 		if offset >= bodyLen {
@@ -125,14 +163,8 @@ func DataParse(body []byte, extraPoints []point.Point) (*Data, error) {
 			return nil, errClickHouseResponse
 		}
 
-		newName := body[offset : offset+int(namelen)]
+		name := body[offset : offset+int(namelen)]
 		offset += int(namelen)
-
-		if bytes.Compare(newName, name) != 0 {
-			name = newName
-			id = d.NameToID(unsafeString(name))
-			// fmt.Println(unsafeString(name), id)
-		}
 
 		time := binary.LittleEndian.Uint32(body[offset : offset+4])
 		offset += 4
@@ -143,8 +175,7 @@ func DataParse(body []byte, extraPoints []point.Point) (*Data, error) {
 		timestamp := binary.LittleEndian.Uint32(body[offset : offset+4])
 		offset += 4
 
-		d.Points[index].MetricID = id
-		d.Points[index].Metric = unsafeString(name)
+		d.Points[index].MetricID, d.Points[index].Metric = d.NameToID(name)
 		d.Points[index].Time = int32(time)
 		d.Points[index].Value = value
 		d.Points[index].Timestamp = int32(timestamp)
